@@ -1,0 +1,190 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure Core RDP Settings
+        run: |
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-MyNet"
+          
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RDP-MyNet" `
+            dir=in action=allow protocol=TCP localport=3389
+
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User with Secure Password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "RDP")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
+
+      - name: Install MyNet
+        run: |
+          $tsUrl = "https://mynet.99400.cn/download/mynet.zip"
+          $installerPath = "$env:TEMP\mynet.zip"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Expand-Archive -Path $installerPath -DestinationPath "$env:ProgramFiles\"
+          Remove-Item $installerPath -Force
+
+      - name: Install Regist
+        run: |
+          $tsUrl = "https://mynet.99400.cn/download/mynet-regist.exe"
+          $tempPath = "$env:TEMP\mynet-regist.exe"
+          $targetDir = "$env:ProgramFiles\mynet"
+          $targetPath = "$targetDir\mynet-regist.exe"
+          
+          # Create target directory if it doesn't exist
+          if (-not (Test-Path -Path $targetDir)) {
+              New-Item -ItemType Directory -Path $targetDir -Force
+          }
+          
+          # Download the registration executable
+          Invoke-WebRequest -Uri $tsUrl -OutFile $tempPath
+          
+          # Move the executable to the MyNet directory
+          Move-Item -Path $tempPath -Destination $targetPath -Force
+
+      - name: Disable UAC and Firewall
+        run: |
+          # disable UAC
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "EnableLUA" -Value 0 -Force
+          
+          # disable Windows Defender Firewall
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+
+      - name: Establish MyNet Connection
+        run: |
+          # Bring up MyNet
+          # & "$env:ProgramFiles\mynet\MyNet.exe"
+          Start-Process -FilePath "$env:ProgramFiles\mynet\MyNet.exe" -ErrorAction Stop
+          
+          # Wait for MyNet to assign an IP and read from the lock file
+          $tsIP = $null
+          $ipLockFile = "$env:APPDATA\mynetwork\ip.lock"
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              if (Test-Path $ipLockFile) {
+                  $tsIP = Get-Content -Path $ipLockFile -Raw -ErrorAction SilentlyContinue | ForEach-Object { $_.Trim() }
+                  if ($tsIP) { break }
+              }
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "MyNet IP not assigned. Exiting."
+              exit 1
+          }
+          echo "MyNet_IP=$tsIP" >> $env:GITHUB_ENV
+          
+      - name: Run Regist
+        run: |
+          # Run the registration executable from the MyNet directory
+          Start-Process -FilePath "$env:ProgramFiles\mynet\mynet-regist.exe" -ArgumentList "oMN5d15ecFqTNfN3dUvO61WD3cPI" -Wait
+
+      - name: Check MyNet Process
+        run: |
+          $maxRetries = 10
+          $retryDelay = 5 # seconds
+          $retryCount = 0
+          $process = $null
+          
+          do {
+              $process = Get-Process -Name "MyNet" -ErrorAction SilentlyContinue
+              
+              if ($null -eq $process) {
+                  $retryCount++
+                  Write-Host "MyNet.exe is not running. Attempting to start... (Attempt $retryCount of $maxRetries)"
+                  
+                  # Try to start MyNet.exe
+                  try {
+                      Start-Process -FilePath "$env:ProgramFiles\mynet\MyNet.exe" -ErrorAction Stop
+                      Start-Sleep -Seconds $retryDelay # Give it some time to start
+                  } catch {
+                      Write-Host "Failed to start MyNet.exe: $_"
+                      if ($retryCount -ge $maxRetries) {
+                          Write-Error "Failed to start MyNet.exe after $maxRetries attempts"
+                          exit 1
+                      }
+                      Start-Sleep -Seconds $retryDelay
+                      continue
+                  }
+              } else {
+                  Write-Host "MyNet.exe is running (Process ID: $($process.Id))"
+                  break
+              }
+              
+              if ($retryCount -ge $maxRetries) {
+                  Write-Error "MyNet.exe is not running after $maxRetries attempts"
+                  exit 1
+              }
+              
+              Start-Sleep -Seconds $retryDelay
+          } while ($true)
+
+      - name: Verify RDP Accessibility
+        run: |
+          Write-Host "MyNet IP: $env:MyNet_IP"
+          
+          # Test connectivity using Test-NetConnection against the MyNet IP on port 3389
+          $testResult = Test-NetConnection -ComputerName $env:MyNet_IP -Port 3389
+          
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to RDP port 3389 failed"
+              exit 1
+          }
+          Write-Host "TCP connectivity successful!"
+
+      - name: Maintain Connection
+        run: |
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:MyNet_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "==================`n"
+          
+          # Keep runner active indefinitely (or until manually cancelled)
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
