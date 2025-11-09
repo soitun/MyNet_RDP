@@ -21,7 +21,7 @@
 3.  获取 OPENID
    点击 MyNet 右上角的二维码
 
-   ![OPENID](./copy.gif)
+   ![OPENID](./openid.png)
 
    点击上图中的复制按钮，记下你的 OPENID
 
