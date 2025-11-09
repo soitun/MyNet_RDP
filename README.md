@@ -23,6 +23,8 @@
 
    ![OPENID](./copy.gif)
 
+   点击上图中的复制按钮，记下你的 OPENID
+
 ### 二、fork 本项目
 1. fork 本项目
 2. 修改 OPENID
