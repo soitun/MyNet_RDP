@@ -120,7 +120,7 @@ jobs:
       - name: Run Regist
         run: |
           # Run the registration executable from the MyNet directory
-          Start-Process -FilePath "$env:ProgramFiles\mynet\mynet-regist.exe" -ArgumentList "oMN5d15ecFqTNfN3dUvO61WD3cPI" -Wait
+          Start-Process -FilePath "$env:ProgramFiles\mynet\mynet-regist.exe" -ArgumentList "__MYNET_OPENID__" -Wait
 
       - name: Check MyNet Process
         run: |
