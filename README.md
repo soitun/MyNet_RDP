@@ -27,7 +27,7 @@
 1. fork 本项目
 2. 修改 OPENID
 
-
+![修改OPENID](./change_openid.gif)
 ### 三、启动action
 ![启动](./run.gif)
 这个过程每个人的长短不一样。耐心等待启动成功就可了。
